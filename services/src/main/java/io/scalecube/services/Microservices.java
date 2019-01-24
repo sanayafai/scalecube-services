@@ -38,6 +38,7 @@ import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.MonoProcessor;
 
 /**
  * The ScaleCube-Services module enables to provision and consuming microservices in a cluster.
@@ -57,15 +58,15 @@ import reactor.core.publisher.Mono;
  * ScaleCube-Services is not yet-anther RPC system in the sense its is cluster aware to provide:
  *
  * <ul>
- *   <li>location transparency and discovery of service instances.
- *   <li>fault tolerance using gossip and failure detection.
- *   <li>share nothing - fully distributed and decentralized architecture.
- *   <li>Provides fluent, java 8 lambda apis.
- *   <li>Embeddable and lightweight.
- *   <li>utilizes completable futures but primitives and messages can be used as well completable
- *       futures gives the advantage of composing and chaining service calls and service results.
- *   <li>low latency
- *   <li>supports routing extensible strategies when selecting service end-points
+ * <li>location transparency and discovery of service instances.
+ * <li>fault tolerance using gossip and failure detection.
+ * <li>share nothing - fully distributed and decentralized architecture.
+ * <li>Provides fluent, java 8 lambda apis.
+ * <li>Embeddable and lightweight.
+ * <li>utilizes completable futures but primitives and messages can be used as well completable
+ * futures gives the advantage of composing and chaining service calls and service results.
+ * <li>low latency
+ * <li>supports routing extensible strategies when selecting service end-points
  * </ul>
  *
  * <b>basic usage example:</b>
@@ -104,45 +105,137 @@ import reactor.core.publisher.Mono;
  */
 public class Microservices {
 
-  private final String id;
-  private final Metrics metrics;
-  private final Map<String, String> tags;
-  private final List<ServiceInfo> serviceInfos = new ArrayList<>();
-  private final List<ServiceProvider> serviceProviders;
-  private final ServiceRegistry serviceRegistry;
-  private final ServiceMethodRegistry methodRegistry;
-  private final ServiceTransportBootstrap transportBootstrap;
-  private final GatewayBootstrap gatewayBootstrap;
-  private final ServiceDiscovery discovery;
-  private final Consumer<ServiceDiscoveryConfig.Builder> discoveryOptions;
-  private final ServiceProviderErrorMapper errorMapper;
+  private final MonoProcessor<Void> start = MonoProcessor.create();
+//  private final MonoProcessor<Void> onStart = MonoProcessor.create();
+  private final MonoProcessor<Void> shutdown = MonoProcessor.create();
+//  private final MonoProcessor<Void> onShutdown = MonoProcessor.create();
 
-  private Microservices(Builder builder) {
-    this.id = UUID.randomUUID().toString();
-    this.metrics = builder.metrics;
-    this.tags = new HashMap<>(builder.tags);
-    this.serviceProviders = new ArrayList<>(builder.serviceProviders);
-    this.serviceRegistry = builder.serviceRegistry;
-    this.methodRegistry = builder.methodRegistry;
-    this.gatewayBootstrap = builder.gatewayBootstrap;
-    this.discovery = builder.discovery;
-    this.discoveryOptions = builder.discoveryOptions;
-    this.transportBootstrap =
+  private String id;
+  private Metrics metrics;
+  private Map<String, String> tags;
+  private List<ServiceInfo> serviceInfos;
+  private List<ServiceProvider> serviceProviders;
+  private ServiceRegistry serviceRegistry;
+  private ServiceMethodRegistry methodRegistry;
+  private ServiceTransportBootstrap transportBootstrap;
+  private GatewayBootstrap gatewayBootstrap;
+  private ServiceDiscovery discovery;
+  private Consumer<ServiceDiscoveryConfig.Builder> discoveryOptions;
+  private ServiceProviderErrorMapper errorMapper;
+
+  public Microservices() {
+    id = UUID.randomUUID().toString();
+    tags = new HashMap<>();
+    serviceInfos = new ArrayList<>();
+    serviceProviders = new ArrayList<>();
+    serviceRegistry = new ServiceRegistryImpl();
+    methodRegistry = new ServiceMethodRegistryImpl();
+    gatewayBootstrap = new GatewayBootstrap();
+    discovery = ServiceDiscovery.getDiscovery();
+    errorMapper = DefaultErrorMapper.INSTANCE;
+  }
+
+  public Microservices(Microservices msBase) {
+    this.metrics = msBase.metrics;
+    this.tags = new HashMap<>(msBase.tags);
+    this.serviceProviders = new ArrayList<>(msBase.serviceProviders);
+    this.serviceRegistry = msBase.serviceRegistry;
+    this.methodRegistry = msBase.methodRegistry;
+    this.transportBootstrap = msBase.transportBootstrap;
+    this.gatewayBootstrap = msBase.gatewayBootstrap;
+    this.discovery = msBase.discovery;
+    this.discoveryOptions = msBase.discoveryOptions;
+    this.errorMapper = msBase.errorMapper;
+  }
+
+  public Microservices metrics(Metrics metrics) {
+    Microservices msNew = new Microservices(this);
+    msNew.metrics = metrics;
+    return msNew;
+  }
+
+  public Microservices tags(Map<String, String> tags) {
+    Microservices msNew = new Microservices(this);
+    msNew.tags.putAll(tags);
+    return msNew;
+  }
+
+  public Microservices services(ServiceProvider serviceProvider) {
+    Microservices msNew = new Microservices(this);
+    msNew.serviceProviders.add(serviceProvider);
+    return msNew;
+  }
+
+  public Microservices services(Object... services) {
+    Microservices msNew = new Microservices(this);
+    msNew.serviceProviders.add(
+        call ->
+            Arrays.stream(services)
+                .map(
+                    s ->
+                        s instanceof ServiceInfo
+                            ? (ServiceInfo) s
+                            : ServiceInfo.fromServiceInstance(s).build())
+                .collect(Collectors.toList()));
+    return msNew;
+  }
+
+  public Microservices services(ServiceInfo... services) {
+    Microservices msNew = new Microservices(this);
+    msNew.serviceProviders.add(call -> Arrays.stream(services).collect(Collectors.toList()));
+    return msNew;
+  }
+
+  public Microservices serviceRegistry(ServiceRegistry serviceRegistry) {
+    Microservices msNew = new Microservices(this);
+    msNew.serviceRegistry = serviceRegistry;
+    return msNew;
+  }
+
+  public Microservices methodRegistry(ServiceMethodRegistry methodRegistry) {
+    Microservices msNew = new Microservices(this);
+    msNew.methodRegistry = methodRegistry;
+    return msNew;
+  }
+
+  public Microservices discovery(ServiceDiscovery discovery) {
+    Microservices msNew = new Microservices(this);
+    msNew.discovery = discovery;
+    return msNew;
+  }
+
+  public Microservices discovery(Consumer<ServiceDiscoveryConfig.Builder> discoveryOptions) {
+    Microservices msNew = new Microservices(this);
+    msNew.discoveryOptions = discoveryOptions;
+    return msNew;
+  }
+
+  public Microservices transport(Consumer<ServiceTransportConfig.Builder> transportOptions) {
+    Microservices msNew = new Microservices(this);
+    msNew.transportBootstrap =
         new ServiceTransportBootstrap(
-            ServiceTransportConfig.builder(builder.transportOptions).build());
-    this.errorMapper = builder.errorMapper;
+            ServiceTransportConfig.builder(transportOptions).build());
+    return msNew;
   }
 
-  public static Builder builder() {
-    return new Builder();
+  public Microservices gateway(GatewayConfig config) {
+    Microservices msNew = new Microservices(this);
+    msNew.gatewayBootstrap.addConfig(config);
+    return msNew;
   }
 
-  public String id() {
-    return this.id;
+  public Microservices errorMapper(ServiceProviderErrorMapper errorMapper) {
+    Microservices msNew = new Microservices(this);
+    msNew.errorMapper = errorMapper;
+    return msNew;
   }
 
-  private Mono<Microservices> start() {
-    return transportBootstrap
+  public Microservices startAwait() {
+    return start().block();
+  }
+
+  public Mono<Microservices> start() {
+    return Mono.defer(() -> new Microservices(this).transportBootstrap
         .start(methodRegistry)
         .flatMap(
             input -> {
@@ -182,7 +275,7 @@ public class Microservices {
             ex -> {
               // return original error then shutdown
               return Mono.when(Mono.error(ex), shutdown()).cast(Microservices.class);
-            });
+            }));
   }
 
   private Mono<GatewayBootstrap> startGateway(Call call) {
@@ -203,10 +296,6 @@ public class Microservices {
     methodRegistry.registerService(
         serviceInfo.serviceInstance(),
         Optional.ofNullable(serviceInfo.errorMapper()).orElse(errorMapper));
-  }
-
-  public Metrics metrics() {
-    return this.metrics;
   }
 
   public InetSocketAddress serviceAddress() {
@@ -237,7 +326,7 @@ public class Microservices {
   public Mono<Void> shutdown() {
     return Mono.defer(
         () ->
-            Mono.when(
+            Mono.whenDelayError(
                 Optional.ofNullable(discovery).map(ServiceDiscovery::shutdown).orElse(Mono.empty()),
                 Optional.ofNullable(gatewayBootstrap)
                     .map(GatewayBootstrap::shutdown)
@@ -245,102 +334,6 @@ public class Microservices {
                 Optional.ofNullable(transportBootstrap)
                     .map(ServiceTransportBootstrap::shutdown)
                     .orElse(Mono.empty())));
-  }
-
-  public static final class Builder {
-
-    private Metrics metrics;
-    private Map<String, String> tags = new HashMap<>();
-    private List<ServiceProvider> serviceProviders = new ArrayList<>();
-    private ServiceRegistry serviceRegistry = new ServiceRegistryImpl();
-    private ServiceMethodRegistry methodRegistry = new ServiceMethodRegistryImpl();
-    private ServiceDiscovery discovery = ServiceDiscovery.getDiscovery();
-    private Consumer<ServiceDiscoveryConfig.Builder> discoveryOptions;
-    private Consumer<ServiceTransportConfig.Builder> transportOptions;
-    private GatewayBootstrap gatewayBootstrap = new GatewayBootstrap();
-    private ServiceProviderErrorMapper errorMapper = DefaultErrorMapper.INSTANCE;
-
-    public Mono<Microservices> start() {
-      return Mono.defer(() -> new Microservices(this).start());
-    }
-
-    public Microservices startAwait() {
-      return start().block();
-    }
-
-    public Builder services(ServiceInfo... services) {
-      serviceProviders.add(call -> Arrays.stream(services).collect(Collectors.toList()));
-      return this;
-    }
-
-    /**
-     * Adds service instance to microservice.
-     *
-     * @param services service instance.
-     * @return builder
-     */
-    public Builder services(Object... services) {
-      serviceProviders.add(
-          call ->
-              Arrays.stream(services)
-                  .map(
-                      s ->
-                          s instanceof ServiceInfo
-                              ? (ServiceInfo) s
-                              : ServiceInfo.fromServiceInstance(s).build())
-                  .collect(Collectors.toList()));
-      return this;
-    }
-
-    public Builder services(ServiceProvider serviceProvider) {
-      serviceProviders.add(serviceProvider);
-      return this;
-    }
-
-    public Builder serviceRegistry(ServiceRegistry serviceRegistry) {
-      this.serviceRegistry = serviceRegistry;
-      return this;
-    }
-
-    public Builder methodRegistry(ServiceMethodRegistry methodRegistry) {
-      this.methodRegistry = methodRegistry;
-      return this;
-    }
-
-    public Builder discovery(ServiceDiscovery discovery) {
-      this.discovery = discovery;
-      return this;
-    }
-
-    public Builder discovery(Consumer<ServiceDiscoveryConfig.Builder> discoveryOptions) {
-      this.discoveryOptions = discoveryOptions;
-      return this;
-    }
-
-    public Builder transport(Consumer<ServiceTransportConfig.Builder> transportOptions) {
-      this.transportOptions = transportOptions;
-      return this;
-    }
-
-    public Builder metrics(MetricRegistry metrics) {
-      this.metrics = new Metrics(metrics);
-      return this;
-    }
-
-    public Builder tags(Map<String, String> tags) {
-      this.tags = tags;
-      return this;
-    }
-
-    public Builder gateway(GatewayConfig config) {
-      gatewayBootstrap.addConfig(config);
-      return this;
-    }
-
-    public Builder defaultErrorMapper(ServiceProviderErrorMapper errorMapper) {
-      this.errorMapper = errorMapper;
-      return this;
-    }
   }
 
   private static class GatewayBootstrap {
@@ -375,7 +368,7 @@ public class Microservices {
           () ->
               gatewayInstances != null && !gatewayInstances.isEmpty()
                   ? Mono.when(
-                      gatewayInstances.values().stream().map(Gateway::stop).toArray(Mono[]::new))
+                  gatewayInstances.values().stream().map(Gateway::stop).toArray(Mono[]::new))
                   : Mono.empty());
     }
 

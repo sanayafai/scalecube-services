@@ -50,7 +50,7 @@ public class MicroservicesTest {
         .thenReturn(Mono.error(new RuntimeException(expectedErrorMessage)));
 
     StepVerifier.create(
-            Microservices.builder()
+            new Microservices()
                 .transport(options -> options.transport(serviceTransport))
                 .start())
         .expectErrorMessage(expectedErrorMessage)
@@ -66,7 +66,7 @@ public class MicroservicesTest {
         .thenReturn(Mono.just(new InetSocketAddress(0)));
 
     StepVerifier.create(
-            Microservices.builder()
+            new Microservices()
                 .discovery(serviceDiscovery)
                 .transport(options -> options.transport(serviceTransport))
                 .start())
