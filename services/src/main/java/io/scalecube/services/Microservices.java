@@ -36,6 +36,8 @@ import java.util.UUID;
 import java.util.concurrent.Executor;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.MonoProcessor;
@@ -105,10 +107,12 @@ import reactor.core.publisher.MonoProcessor;
  */
 public class Microservices {
 
+  private static final Logger log = LoggerFactory.getLogger(Microservices.class);
+
   private final MonoProcessor<Void> start = MonoProcessor.create();
-//  private final MonoProcessor<Void> onStart = MonoProcessor.create();
+  private final MonoProcessor<Void> onStart = MonoProcessor.create();
   private final MonoProcessor<Void> shutdown = MonoProcessor.create();
-//  private final MonoProcessor<Void> onShutdown = MonoProcessor.create();
+  private final MonoProcessor<Void> onShutdown = MonoProcessor.create();
 
   private String id;
   private Metrics metrics;
@@ -124,6 +128,7 @@ public class Microservices {
   private ServiceProviderErrorMapper errorMapper;
 
   public Microservices() {
+
     id = UUID.randomUUID().toString();
     tags = new HashMap<>();
     serviceInfos = new ArrayList<>();
@@ -133,6 +138,25 @@ public class Microservices {
     gatewayBootstrap = new GatewayBootstrap();
     discovery = ServiceDiscovery.getDiscovery();
     errorMapper = DefaultErrorMapper.INSTANCE;
+
+    start
+        .then(doStart())
+        .doOnSuccess(avoid -> onStart.onComplete())
+        .doOnError(onStart::onError)
+        .subscribe(
+            null,
+            thread -> {
+              log.error("{} failed to start, cause: {}", this, thread.toString());
+              shutdown();
+            });
+
+    shutdown
+        .then(doShutdown())
+        .doFinally(s -> onShutdown.onComplete())
+        .subscribe(
+            null,
+            thread -> log.warn("{} failed on doShutdown(): {}", this, thread.toString()),
+            () -> log.debug("Shutdown {}", this));
   }
 
   public Microservices(Microservices msBase) {
@@ -151,6 +175,12 @@ public class Microservices {
   public Microservices metrics(Metrics metrics) {
     Microservices msNew = new Microservices(this);
     msNew.metrics = metrics;
+    return msNew;
+  }
+
+  public Microservices metrics(MetricRegistry metrics) {
+    Microservices msNew = new Microservices(this);
+    msNew.metrics = new Metrics(metrics);
     return msNew;
   }
 
@@ -235,6 +265,14 @@ public class Microservices {
   }
 
   public Mono<Microservices> start() {
+    return Mono.defer(
+        () -> {
+          start.onComplete();
+          return onStart.thenReturn(this);
+        });
+  }
+
+  public Mono<Microservices> doStart() {
     return Mono.defer(() -> new Microservices(this).transportBootstrap
         .start(methodRegistry)
         .flatMap(
@@ -274,7 +312,7 @@ public class Microservices {
         .onErrorResume(
             ex -> {
               // return original error then shutdown
-              return Mono.when(Mono.error(ex), shutdown()).cast(Microservices.class);
+              return Mono.when(Mono.error(ex), doShutdown()).cast(Microservices.class);
             }));
   }
 
@@ -318,12 +356,16 @@ public class Microservices {
     return this.discovery;
   }
 
+  public void shutdown() {
+    shutdown.onComplete();
+  }
+
   /**
    * Shutdown instance and clear resources.
    *
    * @return result of shutdown
    */
-  public Mono<Void> shutdown() {
+  public Mono<Void> doShutdown() {
     return Mono.defer(
         () ->
             Mono.whenDelayError(
