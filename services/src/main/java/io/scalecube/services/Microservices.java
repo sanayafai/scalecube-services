@@ -60,15 +60,15 @@ import reactor.core.publisher.MonoProcessor;
  * ScaleCube-Services is not yet-anther RPC system in the sense its is cluster aware to provide:
  *
  * <ul>
- * <li>location transparency and discovery of service instances.
- * <li>fault tolerance using gossip and failure detection.
- * <li>share nothing - fully distributed and decentralized architecture.
- * <li>Provides fluent, java 8 lambda apis.
- * <li>Embeddable and lightweight.
- * <li>utilizes completable futures but primitives and messages can be used as well completable
- * futures gives the advantage of composing and chaining service calls and service results.
- * <li>low latency
- * <li>supports routing extensible strategies when selecting service end-points
+ *   <li>location transparency and discovery of service instances.
+ *   <li>fault tolerance using gossip and failure detection.
+ *   <li>share nothing - fully distributed and decentralized architecture.
+ *   <li>Provides fluent, java 8 lambda apis.
+ *   <li>Embeddable and lightweight.
+ *   <li>utilizes completable futures but primitives and messages can be used as well completable
+ *       futures gives the advantage of composing and chaining service calls and service results.
+ *   <li>low latency
+ *   <li>supports routing extensible strategies when selecting service end-points
  * </ul>
  *
  * <b>basic usage example:</b>
@@ -126,6 +126,7 @@ public class Microservices {
   private ServiceDiscovery discovery;
   private Consumer<ServiceDiscoveryConfig.Builder> discoveryOptions;
   private ServiceProviderErrorMapper errorMapper;
+  private Consumer<ServiceTransportConfig.Builder> transportOptions;
 
   public Microservices() {
 
@@ -138,6 +139,8 @@ public class Microservices {
     gatewayBootstrap = new GatewayBootstrap();
     discovery = ServiceDiscovery.getDiscovery();
     errorMapper = DefaultErrorMapper.INSTANCE;
+    this.transportBootstrap =
+        new ServiceTransportBootstrap(ServiceTransportConfig.builder(transportOptions).build());
 
     start
         .then(doStart())
@@ -242,9 +245,9 @@ public class Microservices {
 
   public Microservices transport(Consumer<ServiceTransportConfig.Builder> transportOptions) {
     Microservices msNew = new Microservices(this);
+    msNew.transportOptions = transportOptions;
     msNew.transportBootstrap =
-        new ServiceTransportBootstrap(
-            ServiceTransportConfig.builder(transportOptions).build());
+        new ServiceTransportBootstrap(ServiceTransportConfig.builder(transportOptions).build());
     return msNew;
   }
 
@@ -273,47 +276,50 @@ public class Microservices {
   }
 
   public Mono<Microservices> doStart() {
-    return Mono.defer(() -> new Microservices(this).transportBootstrap
-        .start(methodRegistry)
-        .flatMap(
-            input -> {
-              ClientTransport clientTransport = transportBootstrap.clientTransport();
-              InetSocketAddress serviceAddress = transportBootstrap.serviceAddress();
+    return Mono.defer(
+        () ->
+            new Microservices(this)
+                .transportBootstrap
+                .start(methodRegistry)
+                .flatMap(
+                    input -> {
+                      ClientTransport clientTransport = transportBootstrap.clientTransport();
+                      InetSocketAddress serviceAddress = transportBootstrap.serviceAddress();
 
-              Call call = new Call(clientTransport, methodRegistry, serviceRegistry);
+                      Call call = new Call(clientTransport, methodRegistry, serviceRegistry);
 
-              // invoke service providers and register services
-              serviceProviders
-                  .stream()
-                  .flatMap(serviceProvider -> serviceProvider.provide(call).stream())
-                  .forEach(this::collectAndRegister);
+                      // invoke service providers and register services
+                      serviceProviders.stream()
+                          .flatMap(serviceProvider -> serviceProvider.provide(call).stream())
+                          .forEach(this::collectAndRegister);
 
-              // register services in service registry
-              ServiceEndpoint endpoint = null;
-              if (!serviceInfos.isEmpty()) {
-                String serviceHost = serviceAddress.getHostString();
-                int servicePort = serviceAddress.getPort();
-                endpoint = ServiceScanner.scan(serviceInfos, id, serviceHost, servicePort, tags);
-                serviceRegistry.registerService(endpoint);
-              }
+                      // register services in service registry
+                      ServiceEndpoint endpoint = null;
+                      if (!serviceInfos.isEmpty()) {
+                        String serviceHost = serviceAddress.getHostString();
+                        int servicePort = serviceAddress.getPort();
+                        endpoint =
+                            ServiceScanner.scan(serviceInfos, id, serviceHost, servicePort, tags);
+                        serviceRegistry.registerService(endpoint);
+                      }
 
-              // configure discovery and publish to the cluster
-              ServiceDiscoveryConfig discoveryConfig =
-                  ServiceDiscoveryConfig.builder(discoveryOptions)
-                      .serviceRegistry(serviceRegistry)
-                      .endpoint(endpoint)
-                      .build();
-              return discovery
-                  .start(discoveryConfig)
-                  .then(Mono.defer(this::doInjection))
-                  .then(Mono.defer(() -> startGateway(call)))
-                  .thenReturn(this);
-            })
-        .onErrorResume(
-            ex -> {
-              // return original error then shutdown
-              return Mono.when(Mono.error(ex), doShutdown()).cast(Microservices.class);
-            }));
+                      // configure discovery and publish to the cluster
+                      ServiceDiscoveryConfig discoveryConfig =
+                          ServiceDiscoveryConfig.builder(discoveryOptions)
+                              .serviceRegistry(serviceRegistry)
+                              .endpoint(endpoint)
+                              .build();
+                      return discovery
+                          .start(discoveryConfig)
+                          .then(Mono.defer(this::doInjection))
+                          .then(Mono.defer(() -> startGateway(call)))
+                          .thenReturn(this);
+                    })
+                .onErrorResume(
+                    ex -> {
+                      // return original error then shutdown
+                      return Mono.when(Mono.error(ex), doShutdown()).cast(Microservices.class);
+                    }));
   }
 
   private Mono<GatewayBootstrap> startGateway(Call call) {
@@ -410,15 +416,13 @@ public class Microservices {
           () ->
               gatewayInstances != null && !gatewayInstances.isEmpty()
                   ? Mono.when(
-                  gatewayInstances.values().stream().map(Gateway::stop).toArray(Mono[]::new))
+                      gatewayInstances.values().stream().map(Gateway::stop).toArray(Mono[]::new))
                   : Mono.empty());
     }
 
     private InetSocketAddress gatewayAddress(String name, Class<? extends Gateway> gatewayClass) {
       Optional<GatewayConfig> result =
-          gatewayInstances
-              .keySet()
-              .stream()
+          gatewayInstances.keySet().stream()
               .filter(config -> config.name().equals(name))
               .filter(config -> config.gatewayClass() == gatewayClass)
               .findFirst();
@@ -437,9 +441,7 @@ public class Microservices {
 
     private Map<GatewayConfig, InetSocketAddress> gatewayAddresses() {
       return Collections.unmodifiableMap(
-          gatewayInstances
-              .entrySet()
-              .stream()
+          gatewayInstances.entrySet().stream()
               .collect(toMap(Entry::getKey, e -> e.getValue().address())));
     }
   }
